@@ -1,0 +1,5 @@
+{
+  "name": "레시피 메이커 (Recipe Maker)",
+  "description": "냉장고에 남은 재료와 식사 시간을 선택하면 AI가 최적의 요리 레시피 3가지를 추천해줍니다.",
+  "requestFramePermissions": []
+}
