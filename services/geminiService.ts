@@ -7,11 +7,15 @@ import { MealTime, Recipe, RecipeGenerationResponse } from "../types";
  */
 export const testConnection = async (): Promise<boolean> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+    // API_KEY를 직접 사용하고, 작은 maxOutputTokens 설정 시 thinkingBudget을 0으로 설정하여 응답 차단을 방지합니다.
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: "connection test",
-      config: { maxOutputTokens: 5 }
+      config: { 
+        maxOutputTokens: 5,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
     });
     return !!response.text;
   } catch (error) {
@@ -23,7 +27,7 @@ export const testConnection = async (): Promise<boolean> => {
 export const fetchRecipes = async (ingredients: string[], mealTime: MealTime): Promise<Recipe[]> => {
   try {
     // 매번 새로 생성하여 process.env.API_KEY의 최신 값을 반영
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const prompt = `냉장고에 있는 재료: ${ingredients.join(', ')}. 식사 시간: ${mealTime}. 
     이 재료들을 주재료로 활용하여 ${mealTime} 식사에 어울리는 창의적이고 맛있는 요리 레시피 3가지를 추천해줘. 
     사용자가 가진 재료 외에 기본적인 양념(소금, 후추, 기름 등)은 있다고 가정해.`;
@@ -68,7 +72,7 @@ export const fetchRecipes = async (ingredients: string[], mealTime: MealTime): P
       throw new Error("API로부터 응답 텍스트를 받지 못했습니다.");
     }
 
-    const data = JSON.parse(response.text) as RecipeGenerationResponse;
+    const data = JSON.parse(response.text.trim()) as RecipeGenerationResponse;
     return data.recipes;
   } catch (error: any) {
     console.error("Gemini API Error (fetchRecipes):", error);
@@ -78,7 +82,7 @@ export const fetchRecipes = async (ingredients: string[], mealTime: MealTime): P
 
 export const generateRecipeImage = async (recipeTitle: string): Promise<string> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const prompt = `A delicious, professional food photography of ${recipeTitle}, high resolution, appetizing, plated beautifully.`;
     
     const response = await ai.models.generateContent({
@@ -91,6 +95,7 @@ export const generateRecipeImage = async (recipeTitle: string): Promise<string> 
       }
     });
 
+    // 이미지 파트를 찾기 위해 모든 파트를 순회합니다 (규정 준수).
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
         return `data:image/png;base64,${part.inlineData.data}`;
