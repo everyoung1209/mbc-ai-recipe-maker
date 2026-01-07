@@ -3,14 +3,14 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { MealTime, Recipe, RecipeGenerationResponse } from "../types";
 
 /**
- * API 키가 정상적으로 작동하는지 확인하기 위한 간단한 테스트 함수
+ * API 키 유효성을 확인하기 위한 테스트 함수
  */
 export const testConnection = async (): Promise<boolean> => {
-  try {
-    const key = process.env.API_KEY;
-    if (!key || key === "undefined") return false;
+  const apiKey = process.env.API_KEY;
+  if (!apiKey || apiKey === "undefined") return false;
 
-    const ai = new GoogleGenAI({ apiKey: key });
+  try {
+    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: "ping",
@@ -21,29 +21,32 @@ export const testConnection = async (): Promise<boolean> => {
     });
     return !!response.text;
   } catch (error) {
-    console.error("Connection test failed:", error);
+    console.error("연결 테스트 중 오류 발생:", error);
     return false;
   }
 };
 
+/**
+ * 재료와 식사 시간에 따른 레시피 제안 생성
+ */
 export const fetchRecipes = async (ingredients: string[], mealTime: MealTime): Promise<Recipe[]> => {
-  const key = process.env.API_KEY;
-  if (!key || key === "undefined") {
-    throw new Error("API key is missing. Please provide a valid API key.");
+  const apiKey = process.env.API_KEY;
+  if (!apiKey || apiKey === "undefined") {
+    throw new Error("API 키가 설정되지 않았습니다. 앱 설정에서 키를 연결해 주세요.");
   }
 
   try {
-    // 매번 새로 생성하여 process.env.API_KEY의 최신 값을 반영 (AI Studio 규정 준수)
-    const ai = new GoogleGenAI({ apiKey: key });
+    // 매 호출마다 새로운 인스턴스를 생성하여 최신 API 키가 반영되도록 함
+    const ai = new GoogleGenAI({ apiKey });
     const prompt = `냉장고에 있는 재료: ${ingredients.join(', ')}. 식사 시간: ${mealTime}. 
-    이 재료들을 주재료로 활용하여 ${mealTime} 식사에 어울리는 창의적이고 맛있는 요리 레시피 3가지를 추천해줘. 
-    사용자가 가진 재료 외에 기본적인 양념(소금, 후추, 기름 등)은 있다고 가정해.`;
+    이 재료들을 주재료로 활용하여 ${mealTime} 식사에 어울리는 실용적이고 맛있는 한국 요리 레시피 3가지를 추천해줘. 
+    기본 양념(소금, 간장, 식용유 등)은 구비되어 있다고 가정해도 좋아.`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
-        systemInstruction: "당신은 냉장고 파먹기의 달인인 전문 셰프입니다. 사용자의 재료에 딱 맞는 실용적인 레시피를 제안하세요. 한국어로 응답하세요.",
+        systemInstruction: "당신은 냉장고 파먹기의 달인인 전문 셰프입니다. 사용자의 재료에 딱 맞는 실용적인 레시피를 제안하세요. 한국어로 답변하고, JSON 형식으로만 응답해야 합니다.",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -54,16 +57,16 @@ export const fetchRecipes = async (ingredients: string[], mealTime: MealTime): P
                 type: Type.OBJECT,
                 properties: {
                   title: { type: Type.STRING, description: "요리 제목" },
-                  description: { type: Type.STRING, description: "요리에 대한 짧은 소개" },
+                  description: { type: Type.STRING, description: "요리에 대한 짧은 소개 (1~2문장)" },
                   ingredients: { 
                     type: Type.ARRAY, 
                     items: { type: Type.STRING },
-                    description: "필요한 상세 재료 목록"
+                    description: "해당 요리에 구체적으로 필요한 재료 목록"
                   },
                   steps: { 
                     type: Type.ARRAY, 
                     items: { type: Type.STRING },
-                    description: "조리 순서"
+                    description: "상세한 조리 단계"
                   }
                 },
                 required: ["title", "description", "ingredients", "steps"]
@@ -75,26 +78,27 @@ export const fetchRecipes = async (ingredients: string[], mealTime: MealTime): P
       },
     });
 
-    const responseText = response.text;
-    if (!responseText) {
-      throw new Error("API로부터 응답 텍스트를 받지 못했습니다.");
-    }
+    const text = response.text;
+    if (!text) throw new Error("AI 응답을 받지 못했습니다.");
 
-    const data = JSON.parse(responseText.trim()) as RecipeGenerationResponse;
+    const data = JSON.parse(text.trim()) as RecipeGenerationResponse;
     return data.recipes;
   } catch (error: any) {
-    console.error("Gemini API Error (fetchRecipes):", error);
+    console.error("레시피 생성 오류:", error);
     throw error;
   }
 };
 
+/**
+ * 레시피 제목을 기반으로 AI 이미지 생성
+ */
 export const generateRecipeImage = async (recipeTitle: string): Promise<string> => {
-  const key = process.env.API_KEY;
-  if (!key || key === "undefined") return `https://picsum.photos/seed/${encodeURIComponent(recipeTitle)}/600/600`;
+  const apiKey = process.env.API_KEY;
+  if (!apiKey || apiKey === "undefined") return getDefaultImage(recipeTitle);
 
   try {
-    const ai = new GoogleGenAI({ apiKey: key });
-    const prompt = `A professional gourmet food photography of ${recipeTitle}, highly detailed, delicious look, soft natural lighting, high resolution.`;
+    const ai = new GoogleGenAI({ apiKey });
+    const prompt = `A delicious professional gourmet photography of ${recipeTitle}, aesthetic plating, high resolution, soft natural lighting.`;
     
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
@@ -106,14 +110,18 @@ export const generateRecipeImage = async (recipeTitle: string): Promise<string> 
       }
     });
 
+    // 이미지 데이터 파트를 찾아 반환
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
+    
+    return getDefaultImage(recipeTitle);
   } catch (error: any) {
-    console.error("Gemini API Error (generateRecipeImage):", error);
+    console.error("이미지 생성 오류:", error);
+    return getDefaultImage(recipeTitle);
   }
-  
-  return `https://picsum.photos/seed/${encodeURIComponent(recipeTitle)}/600/600`;
 };
+
+const getDefaultImage = (title: string) => `https://picsum.photos/seed/${encodeURIComponent(title)}/600/600`;

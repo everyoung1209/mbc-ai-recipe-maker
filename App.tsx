@@ -13,8 +13,8 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // API 키 관련 상태
-  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null); // null: 확인 중, false: 없음, true: 있음
+  // API 키 관련 상태: null(확인 중), false(키 없음), true(키 있음/시도됨)
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<'success' | 'fail' | null>(null);
@@ -22,11 +22,12 @@ const App: React.FC = () => {
   // 앱 시작 시 API 키 여부 확인
   useEffect(() => {
     const checkInitialKey = async () => {
-      if (window.aistudio) {
+      // AI Studio 환경인 경우
+      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
         const hasKey = await window.aistudio.hasSelectedApiKey();
-        // process.env.API_KEY가 주입되어 있거나 이미 선택된 키가 있는지 확인
-        setHasApiKey(hasKey || (!!process.env.API_KEY && process.env.API_KEY !== "undefined"));
+        setHasApiKey(hasKey);
       } else {
+        // 일반 환경인 경우 process.env.API_KEY 존재 여부 확인
         setHasApiKey(!!process.env.API_KEY && process.env.API_KEY !== "undefined");
       }
     };
@@ -34,18 +35,20 @@ const App: React.FC = () => {
   }, []);
 
   const handleOpenKeySelection = async () => {
-    if (window.aistudio) {
+    if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
       try {
         await window.aistudio.openSelectKey();
-        // 규정에 따라 선택 시도 후 즉시 성공으로 간주하여 UI 잠금 해제 (레이스 컨디션 방지)
+        // 규정: openSelectKey 호출 후 즉시 성공한 것으로 간주하고 앱으로 진입
         setHasApiKey(true);
         setError(null);
         
-        // 사용자의 요청대로 키 선택 직후 자동으로 연결 테스트 실행
-        await handleTestConnection();
+        // 백그라운드에서 연결 테스트 수행
+        handleTestConnection();
       } catch (err) {
-        console.error("Key selection failed", err);
+        console.error("API 키 선택 중 오류:", err);
       }
+    } else {
+      setError("이 환경에서는 API 키 선택기를 지원하지 않습니다.");
     }
   };
 
@@ -56,12 +59,13 @@ const App: React.FC = () => {
       const success = await testConnection();
       setTestResult(success ? 'success' : 'fail');
       if (!success) {
-        setError("API 연결에 실패했습니다. 유효한 API 키를 선택했는지 확인해주세요.");
+        setError("연결 테스트 실패. 유효한 결제 계정이 연결된 API 키인지 확인해 주세요.");
       } else {
         setError(null);
       }
     } catch (err) {
       setTestResult('fail');
+      setError("연결 확인 중 오류가 발생했습니다.");
     } finally {
       setIsTestingKey(false);
     }
@@ -77,7 +81,7 @@ const App: React.FC = () => {
 
   const handleGenerate = async () => {
     if (ingredients.length === 0) {
-      setError("최소 한 개의 재료를 입력해주세요!");
+      setError("최소 한 개의 재료를 입력해 주세요!");
       return;
     }
 
@@ -89,60 +93,69 @@ const App: React.FC = () => {
       const suggestedRecipes = await fetchRecipes(ingredients, mealTime);
       setRecipes(suggestedRecipes);
 
+      // 이미지는 비동기로 로드하여 UI가 먼저 레시피를 보여줄 수 있게 함
       const recipesWithImages = await Promise.all(
         suggestedRecipes.map(async (recipe) => {
-          const imageUrl = await generateRecipeImage(recipe.title);
-          return { ...recipe, imageUrl };
+          try {
+            const imageUrl = await generateRecipeImage(recipe.title);
+            return { ...recipe, imageUrl };
+          } catch {
+            return recipe;
+          }
         })
       );
 
       setRecipes(recipesWithImages);
     } catch (err: any) {
       console.error(err);
-      // API 키가 없거나 잘못된 경우 (404 등) 다시 키 설정 유도
-      if (err.message?.includes("not found") || err.message?.includes("API key")) {
+      const msg = err.message || "";
+      if (msg.includes("not found") || msg.includes("API key") || msg.includes("403") || msg.includes("401")) {
         setHasApiKey(false);
-        setError("유효하지 않은 API 키입니다. 다시 설정해주세요.");
+        setError("API 키가 만료되었거나 권한이 없습니다. 다시 설정해 주세요.");
       } else {
-        setError("레시피를 생성하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+        setError("레시피 생성 중 오류가 발생했습니다. 재료 구성을 확인해 주세요.");
       }
     } finally {
       setIsLoading(false);
     }
   };
 
-  // API 키 설정 강제 모달 팝업
+  // API 키 선택 강제 팝업 (모달)
   if (hasApiKey === false) {
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-stone-900/90 backdrop-blur-sm p-4">
-        <div className="bg-white rounded-[2rem] max-w-md w-full p-10 shadow-2xl animate-in zoom-in duration-300 border border-orange-100">
-          <div className="flex flex-col items-center text-center">
-            <div className="w-24 h-24 bg-orange-500 rounded-3xl flex items-center justify-center mb-8 shadow-lg shadow-orange-200">
-              <i className="fas fa-key text-4xl text-white"></i>
-            </div>
-            <h2 className="text-3xl font-bold text-gray-800 mb-4">셰프님, 환영합니다!</h2>
-            <p className="text-gray-500 mb-10 leading-relaxed">
-              냉장고 파먹기를 시작하기 전에 인공지능 요리사에게 필요한 <span className="text-orange-600 font-bold">API 키</span>를 연결해주세요.<br/>
-              (본인의 유료 결제가 설정된 API 키가 필요합니다.)
-            </p>
-            
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-stone-900/95 backdrop-blur-md p-4">
+        <div className="bg-white rounded-[2.5rem] max-w-lg w-full p-10 shadow-2xl animate-in zoom-in duration-500 border border-orange-100 flex flex-col items-center text-center">
+          <div className="w-24 h-24 bg-orange-500 rounded-3xl flex items-center justify-center mb-8 shadow-xl shadow-orange-200">
+            <i className="fas fa-hat-chef text-4xl text-white"></i>
+          </div>
+          <h2 className="text-3xl font-black text-gray-800 mb-4">냉장고 셰프 준비 완료!</h2>
+          <p className="text-gray-500 mb-8 leading-relaxed text-lg">
+            AI 요리사의 지능을 깨우기 위해<br/>
+            사용자의 <span className="text-orange-600 font-bold">API 키</span>를 먼저 연결해야 합니다.
+          </p>
+          
+          <div className="w-full space-y-4">
             <button
               onClick={handleOpenKeySelection}
-              className="w-full py-5 bg-orange-500 hover:bg-orange-600 text-white rounded-2xl font-bold text-xl shadow-xl hover:shadow-orange-200 transition-all active:scale-95 mb-6"
+              className="w-full py-5 bg-orange-500 hover:bg-orange-600 text-white rounded-2xl font-bold text-xl shadow-xl hover:shadow-orange-200 transition-all active:scale-95 flex items-center justify-center gap-3"
             >
-              API 키 연결하기
+              <i className="fas fa-key"></i> API 키 선택/입력하기
             </button>
             
-            <div className="flex flex-col gap-3">
-              <a 
-                href="https://ai.google.dev/gemini-api/docs/billing" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-sm text-gray-400 hover:text-orange-500 transition-colors flex items-center justify-center gap-1"
-              >
-                결제 설정이 필요하신가요? <i className="fas fa-external-link-alt text-[10px]"></i>
-              </a>
-            </div>
+            <p className="text-xs text-gray-400 font-medium">
+              * 유료 결제 설정이 완료된 API 키만 사용 가능합니다.
+            </p>
+          </div>
+
+          <div className="mt-10 pt-8 border-t border-gray-100 w-full flex flex-col items-center gap-3">
+            <a 
+              href="https://ai.google.dev/gemini-api/docs/billing" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-sm text-stone-500 hover:text-orange-600 transition-colors font-bold flex items-center gap-2"
+            >
+              <i className="fas fa-credit-card"></i> 결제 프로젝트 설정 가이드 <i className="fas fa-external-link-alt text-[10px]"></i>
+            </a>
           </div>
         </div>
       </div>
@@ -150,101 +163,81 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen pb-20">
+    <div className="min-h-screen pb-20 selection:bg-orange-100">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-orange-100 sticky top-0 z-30">
+      <header className="bg-white/90 backdrop-blur-md border-b border-orange-50 sticky top-0 z-30 shadow-sm">
         <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-orange-500 w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-sm">
-              <i className="fas fa-hat-chef text-xl"></i>
+            <div className="bg-orange-500 w-9 h-9 rounded-lg flex items-center justify-center text-white shadow-sm">
+              <i className="fas fa-hat-chef text-lg"></i>
             </div>
-            <h1 className="text-xl font-black text-gray-800 tracking-tight">냉장고 셰프</h1>
+            <h1 className="text-lg font-black text-gray-800 tracking-tight">냉장고 셰프</h1>
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <button 
               onClick={() => setShowSettings(!showSettings)}
-              className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${
-                showSettings ? 'bg-orange-500 text-white shadow-md' : 'bg-stone-100 text-stone-500 hover:bg-orange-100 hover:text-orange-600'
+              className={`w-9 h-9 flex items-center justify-center rounded-full transition-all ${
+                showSettings ? 'bg-orange-500 text-white shadow-md' : 'bg-stone-50 text-stone-500 hover:bg-orange-100 hover:text-orange-600'
               }`}
-              title="설정"
             >
-              <i className={`fas ${testResult === 'fail' ? 'fa-exclamation-triangle text-red-500' : 'fa-cog'}`}></i>
+              <i className={`fas ${testResult === 'fail' ? 'fa-exclamation-circle text-red-500' : 'fa-cog'}`}></i>
             </button>
           </div>
         </div>
       </header>
 
-      {/* Settings Bar (Slide-down) */}
+      {/* Settings Bar */}
       {showSettings && (
-        <div className="bg-white border-b border-orange-50 animate-in slide-in-from-top duration-300 shadow-sm overflow-hidden">
-          <div className="max-w-4xl mx-auto px-4 py-5 flex flex-col gap-4">
+        <div className="bg-stone-50 border-b border-stone-100 animate-in slide-in-from-top duration-300">
+          <div className="max-w-4xl mx-auto px-4 py-4 flex flex-col gap-3">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-black text-stone-400 uppercase tracking-widest">Connection</span>
-                <div className={`px-2.5 py-1 rounded-full text-[10px] font-bold flex items-center gap-1.5 ${
-                  testResult === 'success' ? 'bg-green-100 text-green-700' : 
-                  testResult === 'fail' ? 'bg-red-100 text-red-700' : 'bg-stone-100 text-stone-500'
-                }`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${
-                    testResult === 'success' ? 'bg-green-500 animate-pulse' : 
-                    testResult === 'fail' ? 'bg-red-500' : 'bg-stone-400'
-                  }`}></span>
-                  {testResult === 'success' ? '연결됨' : testResult === 'fail' ? '연결 오류' : '확인 필요'}
-                </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black text-stone-400 uppercase tracking-widest">API Status</span>
+                <div className={`w-2 h-2 rounded-full ${testResult === 'success' ? 'bg-green-500' : testResult === 'fail' ? 'bg-red-500' : 'bg-stone-300'}`}></div>
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={handleOpenKeySelection}
-                  className="text-xs font-bold px-4 py-2 bg-stone-100 text-stone-700 rounded-xl hover:bg-stone-200 transition-all"
+                  className="text-[11px] font-bold px-3 py-1.5 bg-white border border-stone-200 rounded-lg text-stone-600 hover:bg-stone-100 transition-all"
                 >
-                  <i className="fas fa-exchange-alt mr-1.5"></i> 키 변경
+                  <i className="fas fa-sync-alt mr-1"></i> 키 다시 선택
                 </button>
                 <button
                   onClick={handleTestConnection}
                   disabled={isTestingKey}
-                  className="text-xs font-bold px-4 py-2 bg-orange-500 text-white rounded-xl hover:bg-orange-600 transition-all disabled:opacity-50 shadow-sm"
+                  className="text-[11px] font-bold px-3 py-1.5 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-all disabled:opacity-50"
                 >
-                  {isTestingKey ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-vial mr-1.5"></i>}
-                  테스트
+                  {isTestingKey ? <i className="fas fa-spinner fa-spin"></i> : '연결 테스트'}
                 </button>
               </div>
             </div>
-            {error && (
-              <p className="text-[10px] text-red-500 font-medium bg-red-50 p-2 rounded-lg text-center">
-                <i className="fas fa-info-circle mr-1"></i> {error}
-              </p>
-            )}
           </div>
         </div>
       )}
 
       <main className="max-w-4xl mx-auto px-4 mt-8">
         {hasApiKey === null ? (
-          <div className="flex flex-col items-center justify-center h-96">
-            <div className="w-16 h-16 border-4 border-orange-200 border-t-orange-500 rounded-full animate-spin"></div>
-            <p className="text-stone-400 mt-6 font-medium">셰프를 깨우는 중...</p>
+          <div className="flex flex-col items-center justify-center h-80 space-y-4">
+            <div className="w-12 h-12 border-4 border-stone-100 border-t-orange-500 rounded-full animate-spin"></div>
+            <p className="text-stone-400 font-bold text-sm">환경 설정을 불러오고 있습니다...</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {/* Input Section */}
-            <div className="md:col-span-1 space-y-10">
-              <section className="bg-white p-6 rounded-3xl shadow-sm border border-stone-100">
-                <h2 className="text-lg font-bold text-gray-800 mb-5 flex items-center gap-3">
-                  <span className="bg-yellow-100 w-8 h-8 rounded-lg flex items-center justify-center text-yellow-600">
-                    <i className="fas fa-clock text-sm"></i>
-                  </span>
-                  식사 시간
+            <div className="md:col-span-1 space-y-8">
+              <section className="bg-white p-6 rounded-3xl border border-stone-100 shadow-sm">
+                <h2 className="text-base font-bold text-gray-800 mb-5 flex items-center gap-2">
+                  <span className="text-orange-500"><i className="fas fa-clock"></i></span>
+                  어떤 끼니인가요?
                 </h2>
                 <MealTimeSelector selected={mealTime} onSelect={setMealTime} />
               </section>
 
-              <section className="bg-white p-6 rounded-3xl shadow-sm border border-stone-100">
-                <h2 className="text-lg font-bold text-gray-800 mb-5 flex items-center gap-3">
-                  <span className="bg-emerald-100 w-8 h-8 rounded-lg flex items-center justify-center text-emerald-600">
-                    <i className="fas fa-refrigerator text-sm"></i>
-                  </span>
-                  오늘의 재료
+              <section className="bg-white p-6 rounded-3xl border border-stone-100 shadow-sm">
+                <h2 className="text-base font-bold text-gray-800 mb-5 flex items-center gap-2">
+                  <span className="text-emerald-500"><i className="fas fa-refrigerator"></i></span>
+                  사용할 재료들
                 </h2>
                 <IngredientInput 
                   ingredients={ingredients} 
@@ -258,25 +251,23 @@ const App: React.FC = () => {
                 disabled={isLoading || ingredients.length === 0}
                 className={`w-full py-5 rounded-[1.5rem] font-black text-xl shadow-xl transition-all flex items-center justify-center gap-3 ${
                   isLoading || ingredients.length === 0
-                    ? 'bg-stone-200 text-stone-400 cursor-not-allowed translate-y-0'
+                    ? 'bg-stone-200 text-stone-400 cursor-not-allowed'
                     : 'bg-orange-500 hover:bg-orange-600 text-white hover:-translate-y-1 active:translate-y-0 active:shadow-inner'
                 }`}
               >
                 {isLoading ? (
-                  <>
-                    <i className="fas fa-spinner fa-spin"></i>
-                  </>
+                  <i className="fas fa-spinner fa-spin"></i>
                 ) : (
                   <>
-                    레시피 3가지 보기 <i className="fas fa-sparkles"></i>
+                    레시피 3가지 추천 <i className="fas fa-sparkles text-sm"></i>
                   </>
                 )}
               </button>
 
-              {error && !showSettings && (
-                <div className="p-4 bg-red-50 border border-red-100 text-red-600 rounded-2xl text-sm flex items-start gap-3 animate-in fade-in slide-in-from-bottom-2">
+              {error && (
+                <div className="p-4 bg-red-50 border border-red-100 text-red-600 rounded-2xl text-xs font-bold flex items-start gap-3 animate-in fade-in slide-in-from-top-1">
                   <i className="fas fa-exclamation-circle mt-0.5"></i>
-                  <span className="font-medium">{error}</span>
+                  <span>{error}</span>
                 </div>
               )}
             </div>
@@ -284,42 +275,41 @@ const App: React.FC = () => {
             {/* Results Section */}
             <div className="md:col-span-2">
               {recipes.length > 0 ? (
-                <div className="space-y-10">
+                <div className="space-y-8">
                   <div className="flex items-end justify-between px-2">
                     <div>
-                      <h2 className="text-3xl font-black text-gray-800 mb-1">
-                        오늘의 <span className="text-orange-500">추천 요리</span>
+                      <h2 className="text-3xl font-black text-gray-800 tracking-tight">
+                        셰프의 <span className="text-orange-500">제안</span>
                       </h2>
-                      <p className="text-stone-400 text-sm font-medium">AI가 엄선한 {mealTime} 맞춤 식단입니다.</p>
-                    </div>
-                    <div className="bg-white px-4 py-2 rounded-2xl border border-stone-100 shadow-sm text-stone-500 text-sm font-bold">
-                      {recipes.length} Recipes
+                      <p className="text-stone-400 text-sm font-medium mt-1">
+                        입력하신 재료로 만들 수 있는 {mealTime} 맞춤 메뉴입니다.
+                      </p>
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 gap-10">
+                  <div className="grid grid-cols-1 gap-8">
                     {recipes.map((recipe, index) => (
                       <RecipeCard key={index} recipe={recipe} />
                     ))}
                   </div>
                 </div>
               ) : !isLoading ? (
-                <div className="h-[500px] flex flex-col items-center justify-center text-center p-12 bg-white rounded-[3rem] border-2 border-dashed border-stone-200 shadow-inner">
-                  <div className="bg-stone-50 w-24 h-24 rounded-full flex items-center justify-center text-stone-200 mb-8 border border-stone-100">
-                    <i className="fas fa-utensils text-5xl"></i>
+                <div className="h-[460px] flex flex-col items-center justify-center text-center p-10 bg-white rounded-[3rem] border-2 border-dashed border-stone-200 shadow-inner">
+                  <div className="bg-stone-50 w-24 h-24 rounded-full flex items-center justify-center text-stone-200 mb-6 border border-stone-100">
+                    <i className="fas fa-utensils text-4xl"></i>
                   </div>
-                  <h3 className="text-2xl font-black text-stone-700 mb-3">무엇을 먹어볼까요?</h3>
-                  <p className="text-stone-400 max-w-[280px] leading-relaxed font-medium">
-                    왼쪽 패널에서 재료를 추가하고 버튼을 누르면 인공지능이 특별한 레시피를 제안해드립니다.
+                  <h3 className="text-xl font-black text-stone-700 mb-3">냉장고를 털어볼까요?</h3>
+                  <p className="text-stone-400 max-w-[260px] leading-relaxed text-sm font-medium">
+                    사용 가능한 재료들을 입력하면 AI 셰프가 맛있는 레시피를 즉석에서 만들어 드립니다.
                   </p>
                 </div>
               ) : (
-                <div className="space-y-10">
-                  <div className="h-12 bg-stone-100 rounded-xl w-48 animate-pulse"></div>
+                <div className="space-y-8 animate-pulse">
+                  <div className="h-10 bg-stone-100 rounded-xl w-40"></div>
                   {[1, 2, 3].map((i) => (
-                    <div key={i} className="bg-white rounded-[2.5rem] overflow-hidden shadow-sm border border-stone-100 animate-pulse">
-                      <div className="h-72 bg-stone-100"></div>
+                    <div key={i} className="bg-white rounded-[2rem] overflow-hidden border border-stone-100 shadow-sm">
+                      <div className="h-60 bg-stone-50"></div>
                       <div className="p-8 space-y-6">
-                        <div className="h-10 bg-stone-100 rounded-xl w-3/4"></div>
+                        <div className="h-8 bg-stone-100 rounded-lg w-2/3"></div>
                         <div className="space-y-3">
                           <div className="h-4 bg-stone-100 rounded-lg w-full"></div>
                           <div className="h-4 bg-stone-100 rounded-lg w-5/6"></div>
@@ -335,9 +325,9 @@ const App: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="mt-32 py-16 text-center text-stone-300 text-xs border-t border-stone-50 bg-white">
-        <p className="font-bold uppercase tracking-[0.2em] mb-3">Refrigerator Chef AI</p>
-        <p className="italic">Transforming your ingredients into culinary masterpieces.</p>
+      <footer className="mt-32 py-16 text-center text-stone-300 text-[10px] font-bold uppercase tracking-[0.2em] border-t border-stone-50 bg-white">
+        <p className="mb-2">Refrigerator Chef AI</p>
+        <p className="font-medium lowercase tracking-normal italic opacity-50">Cook smart with Gemini AI</p>
       </footer>
     </div>
   );
